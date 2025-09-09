@@ -17,10 +17,16 @@ use serde::{Serialize, Serializer};
 ///
 /// [0]: https://docs.rs/serde/latest/serde/trait.Serializer.html#method.is_human_readable
 /// [sec5]: https://datatracker.ietf.org/doc/html/rfc4648#section-5
-#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
+#[derive(Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
 pub struct HumanBinaryData(Vec<u8>);
 
 common_impls!(HumanBinaryData);
+
+impl fmt::Debug for HumanBinaryData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "HumanBinaryData {{ length: {} }}", self.0.len())
+    }
+}
 
 impl From<Base64UrlSafeData> for HumanBinaryData {
     fn from(value: Base64UrlSafeData) -> Self {
