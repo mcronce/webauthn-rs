@@ -588,7 +588,7 @@ pub struct Authentication;
 /// Trait for ceremony marker structs
 pub trait Ceremony {
     /// The type of the extension outputs of the ceremony
-    type SignedExtensions: DeserializeOwned + std::fmt::Debug + std::default::Default;
+    type SignedExtensions: SignedExtensions;
 }
 
 impl Ceremony for Registration {
@@ -597,6 +597,25 @@ impl Ceremony for Registration {
 
 impl Ceremony for Authentication {
     type SignedExtensions = AuthenticationSignedExtensions;
+}
+
+/// TODO
+pub trait SignedExtensions: DeserializeOwned + core::fmt::Debug + core::default::Default {
+    /// TODO
+    fn add_prf(&mut self, prf: Prf);
+}
+
+impl SignedExtensions for RegistrationSignedExtensions {
+    /// TODO
+    fn add_prf(&mut self, _prf: Prf) {
+        unreachable!();
+    }
+}
+
+impl SignedExtensions for AuthenticationSignedExtensions {
+    fn add_prf(&mut self, prf: Prf) {
+        self.prf = Some(prf);
+    }
 }
 
 /// The client's response to the request that it use the `credProtect` extension
@@ -631,6 +650,9 @@ pub struct RegistrationSignedExtensions {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthenticationSignedExtensions {
+    /// TODO
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prf: Option<Prf>,
     /// Extension key-values that we have parsed, but don't strictly recognise.
     #[serde(flatten)]
     pub unknown_keys: BTreeMap<String, serde_cbor_2::Value>,

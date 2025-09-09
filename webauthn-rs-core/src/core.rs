@@ -781,7 +781,7 @@ impl WebauthnCore {
         // authenticatorData, and signature respectively.
         //
         // Let JSONtext be the result of running UTF-8 decode on the value of cData.
-        let data = AuthenticatorAssertionResponse::try_from(&rsp.response).map_err(|e| {
+        let mut data = AuthenticatorAssertionResponse::try_from(&rsp.response).map_err(|e| {
             debug!("AuthenticatorAssertionResponse::try_from -> {:?}", e);
             e
         })?;
@@ -893,6 +893,11 @@ impl WebauthnCore {
         if data.authenticator_data.backup_state && !cred.backup_eligible {
             error!("Credential indicates it is backed up, but has not declared valid backup eligibility");
             return Err(WebauthnError::CredentialMayNotBeHardwareBound);
+        }
+
+        if let ExtnState::Set(prf) = &cred.extensions.prf {
+            data.authenticator_data
+                .add_prf_extension(prf.clone().into());
         }
 
         // Verify that the values of the client extension outputs in clientExtensionResults and the
@@ -1140,7 +1145,7 @@ impl WebauthnCore {
         let backup_state = auth_data.backup_state;
         let backup_eligible = auth_data.backup_eligible;
 
-        let extensions = process_authentication_extensions(&auth_data.extensions);
+        let extensions = process_authentication_extensions(auth_data.extensions);
 
         if backup_state != cred.backup_state {
             needs_update = true;

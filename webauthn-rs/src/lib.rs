@@ -246,6 +246,7 @@ pub struct WebauthnBuilder<'a> {
     timeout: Duration,
     algorithms: Vec<COSEAlgorithm>,
     user_presence_only_security_keys: bool,
+    prf_enabled: bool,
 }
 
 impl<'a> WebauthnBuilder<'a> {
@@ -302,6 +303,7 @@ impl<'a> WebauthnBuilder<'a> {
                 timeout: DEFAULT_AUTHENTICATOR_TIMEOUT,
                 algorithms: COSEAlgorithm::secure_algs(),
                 user_presence_only_security_keys: false,
+                prf_enabled: false,
             })
         } else {
             error!("rp_id is not an effective_domain of rp_origin");
@@ -383,6 +385,15 @@ impl<'a> WebauthnBuilder<'a> {
         self
     }
 
+    /// Enable the PRF extension
+    ///
+    /// <https://w3c.github.io/webauthn/#prf-extension>
+    #[inline]
+    pub fn set_prf_enabled(mut self, enabled: bool) -> Self {
+        self.prf_enabled = enabled;
+        self
+    }
+
     /// Complete the construction of the [Webauthn] instance. If an invalid configuration setting
     /// is found, an Error will be returned.
     ///
@@ -411,6 +422,7 @@ impl<'a> WebauthnBuilder<'a> {
             ),
             algorithms: self.algorithms,
             user_presence_only_security_keys: self.user_presence_only_security_keys,
+            prf_enabled: self.prf_enabled,
         })
     }
 }
@@ -457,6 +469,7 @@ pub struct Webauthn {
     core: WebauthnCore,
     algorithms: Vec<COSEAlgorithm>,
     user_presence_only_security_keys: bool,
+    prf_enabled: bool,
 }
 
 impl Webauthn {
@@ -553,6 +566,9 @@ impl Webauthn {
             cred_props: Some(true),
             min_pin_length: None,
             hmac_create_secret: None,
+            prf: self
+                .prf_enabled
+                .then_some(RequestRegistrationPrf { enabled: true }),
         });
 
         let builder = self
@@ -676,8 +692,30 @@ impl Webauthn {
         &self,
         creds: &[Passkey],
     ) -> WebauthnResult<(RequestChallengeResponse, PasskeyAuthentication)> {
-        let extensions = None;
-        let creds = creds.iter().map(|sk| sk.cred.clone()).collect();
+        let creds: Vec<_> = creds.iter().map(|sk| sk.cred.clone()).collect();
+
+        let extensions = Some(RequestAuthenticationExtensions {
+            appid: None,
+            uvm: None,
+            hmac_get_secret: None,
+            prf: self.prf_enabled.then_some({
+                let eval_by_credential = creds
+                    .iter()
+                    .filter_map(|cred| {
+                        cred.extensions
+                            .prf
+                            .clone()
+                            .into_client_eval()
+                            .and_then(|prf| Some((cred.cred_id.clone(), prf.eval?)))
+                    })
+                    .collect();
+                Prf {
+                    eval: None,
+                    eval_by_credential: Some(eval_by_credential),
+                }
+            }),
+        });
+
         let policy = Some(UserVerificationPolicy::Required);
         let allow_backup_eligible_upgrade = true;
         let hints = None;
@@ -866,12 +904,17 @@ impl Webauthn {
             })
         };
 
+        let prf = self
+            .prf_enabled
+            .then_some(RequestRegistrationPrf { enabled: true });
+
         let extensions = Some(RequestRegistrationExtensions {
             cred_protect,
             uvm: Some(true),
             cred_props: Some(true),
             min_pin_length: None,
             hmac_create_secret: None,
+            prf,
         });
 
         let policy = if self.user_presence_only_security_keys {
@@ -1166,6 +1209,9 @@ impl Webauthn {
             // https://fidoalliance.org/specs/fido-v2.1-rd-20210309/fido-client-to-authenticator-protocol-v2.1-rd-20210309.html#sctn-minpinlength-extension
             min_pin_length: Some(true),
             hmac_create_secret: Some(true),
+            prf: self
+                .prf_enabled
+                .then_some(RequestRegistrationPrf { enabled: true }),
         });
 
         let builder = self
@@ -1250,12 +1296,28 @@ impl Webauthn {
         &self,
         creds: &[AttestedPasskey],
     ) -> WebauthnResult<(RequestChallengeResponse, AttestedPasskeyAuthentication)> {
-        let creds = creds.iter().map(|sk| sk.cred.clone()).collect();
+        let creds: Vec<_> = creds.iter().map(|sk| sk.cred.clone()).collect();
 
         let extensions = Some(RequestAuthenticationExtensions {
             appid: None,
             uvm: Some(true),
             hmac_get_secret: None,
+            prf: self.prf_enabled.then_some({
+                let eval_by_credential = creds
+                    .iter()
+                    .filter_map(|cred| {
+                        cred.extensions
+                            .prf
+                            .clone()
+                            .into_client_eval()
+                            .and_then(|prf| Some((cred.cred_id.clone(), prf.eval?)))
+                    })
+                    .collect();
+                Prf {
+                    eval: None,
+                    eval_by_credential: Some(eval_by_credential),
+                }
+            }),
         });
 
         let policy = Some(UserVerificationPolicy::Required);
@@ -1315,14 +1377,34 @@ impl Webauthn {
     ///
     /// Since this relies on the client to "discover" what credential and user id to
     /// use, there are no options required to start this.
+    #[inline]
     pub fn start_discoverable_authentication(
         &self,
+    ) -> WebauthnResult<(RequestChallengeResponse, DiscoverableAuthentication)> {
+        self._start_discoverable_authentication(None)
+    }
+
+    /// This fnuction will initiate a conditional UI authentication for discoverable credentials, with PRF enabled.
+    ///
+    /// Since this relies on the client to "discover" what credential and user id to
+    /// use, there are no options required to start this.
+    pub fn start_discoverable_authentication_with_prf(
+        &self,
+        prf: Prf,
+    ) -> WebauthnResult<(RequestChallengeResponse, DiscoverableAuthentication)> {
+        self._start_discoverable_authentication(Some(prf))
+    }
+
+    fn _start_discoverable_authentication(
+        &self,
+        prf: Option<Prf>,
     ) -> WebauthnResult<(RequestChallengeResponse, DiscoverableAuthentication)> {
         let policy = Some(UserVerificationPolicy::Required);
         let extensions = Some(RequestAuthenticationExtensions {
             appid: None,
             uvm: Some(true),
             hmac_get_secret: None,
+            prf,
         });
         let allow_backup_eligible_upgrade = false;
         let hints = None;
@@ -1426,6 +1508,9 @@ impl Webauthn {
             // https://fidoalliance.org/specs/fido-v2.1-rd-20210309/fido-client-to-authenticator-protocol-v2.1-rd-20210309.html#sctn-minpinlength-extension
             min_pin_length: Some(true),
             hmac_create_secret: Some(true),
+            prf: self
+                .prf_enabled
+                .then_some(RequestRegistrationPrf { enabled: true }),
         });
 
         let builder = self
@@ -1495,11 +1580,27 @@ impl Webauthn {
         &self,
         creds: &[AttestedResidentKey],
     ) -> WebauthnResult<(RequestChallengeResponse, AttestedResidentKeyAuthentication)> {
-        let creds = creds.iter().map(|sk| sk.cred.clone()).collect();
+        let creds: Vec<_> = creds.iter().map(|sk| sk.cred.clone()).collect();
         let extensions = Some(RequestAuthenticationExtensions {
             appid: None,
             uvm: Some(true),
             hmac_get_secret: None,
+            prf: self.prf_enabled.then_some({
+                let eval_by_credential = creds
+                    .iter()
+                    .filter_map(|cred| {
+                        cred.extensions
+                            .prf
+                            .clone()
+                            .into_client_eval()
+                            .and_then(|prf| Some((cred.cred_id.clone(), prf.eval?)))
+                    })
+                    .collect();
+                Prf {
+                    eval: None,
+                    eval_by_credential: Some(eval_by_credential),
+                }
+            }),
         });
 
         let policy = Some(UserVerificationPolicy::Required);

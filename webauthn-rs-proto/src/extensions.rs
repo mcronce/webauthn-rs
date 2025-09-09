@@ -1,6 +1,8 @@
 //! Extensions allowing certain types of authenticators to provide supplemental information.
 
-use base64urlsafedata::Base64UrlSafeData;
+use std::collections::HashMap;
+
+use base64urlsafedata::{Base64UrlSafeData, HumanBinaryData};
 use serde::{Deserialize, Serialize};
 
 /// Valid credential protection policies
@@ -51,6 +53,15 @@ pub struct CredProtect {
     pub enforce_credential_protection_policy: Option<bool>,
 }
 
+/// Options for the client's use of the `prf` extension
+///
+/// <https://w3c.github.io/webauthn/#prf-extension>
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RequestRegistrationPrf {
+    /// Telling the authenticator client whether or not PRF is enabled
+    pub enabled: bool,
+}
+
 /// Extension option inputs for PublicKeyCredentialCreationOptions.
 ///
 /// Implements \[AuthenticatorExtensionsClientInputs\] from the spec.
@@ -80,6 +91,11 @@ pub struct RequestRegistrationExtensions {
     /// CTAP2.1 create hmac secret
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hmac_create_secret: Option<bool>,
+
+    /// Pseudo-random function; a motivating example in the RFC is PRF outputs being used as
+    /// symmetric keys to encrypt user data
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prf: Option<RequestRegistrationPrf>,
 }
 
 impl Default for RequestRegistrationExtensions {
@@ -90,6 +106,7 @@ impl Default for RequestRegistrationExtensions {
             cred_props: Some(true),
             min_pin_length: None,
             hmac_create_secret: None,
+            prf: None,
         }
     }
 }
@@ -108,6 +125,7 @@ impl Into<js_sys::Object> for &RequestRegistrationExtensions {
             cred_props,
             min_pin_length,
             hmac_create_secret,
+            prf,
         } = self;
 
         let obj = Object::new();
@@ -142,6 +160,11 @@ impl Into<js_sys::Object> for &RequestRegistrationExtensions {
                 &JsValue::from_bool(*hmac_create_secret),
             )
             .unwrap();
+        }
+
+        if let Some(prf) = prf {
+            let jsv = serde_wasm_bindgen::to_value(&prf).unwrap();
+            js_sys::Reflect::set(&obj, &"prf".into(), &jsv).unwrap();
         }
 
         obj
@@ -182,6 +205,11 @@ pub struct RequestAuthenticationExtensions {
     /// Hmac get secret
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hmac_get_secret: Option<HmacGetSecretInput>,
+
+    /// Pseudo-random function; a motivating example in the RFC is PRF outputs being used as
+    /// symmetric keys to encrypt user data
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prf: Option<Prf>,
 }
 
 // Unable to create from, because it's an out of crate struct
@@ -197,6 +225,7 @@ impl Into<js_sys::Object> for &RequestAuthenticationExtensions {
             appid: _,
             uvm,
             hmac_get_secret,
+            prf,
         } = self;
 
         let obj = Object::new();
@@ -217,6 +246,21 @@ impl Into<js_sys::Object> for &RequestAuthenticationExtensions {
             }
 
             js_sys::Reflect::set(&obj, &"hmacGetSecret".into(), &hmac).unwrap();
+        }
+
+        if let Some(prf) = prf.as_ref().and_then(|p| p.eval.as_ref()) {
+            let eval = Object::new();
+            let first = Uint8Array::from(prf.first.as_slice());
+            js_sys::Reflect::set(&eval, &"first".into(), &first).unwrap();
+            if let Some(second) = prf.second.as_ref() {
+                let second = Uint8Array::from(second.as_slice());
+                js_sys::Reflect::set(&eval, &"second".into(), &second).unwrap();
+            }
+
+            let prf_obj = Object::new();
+            js_sys::Reflect::set(&prf_obj, &"eval".into(), &eval).unwrap();
+
+            js_sys::Reflect::set(&obj, &"prf".into(), &prf_obj).unwrap();
         }
 
         obj
@@ -290,6 +334,59 @@ pub struct CredProps {
     ///
     /// Note that this extension is UNSIGNED and may have been altered by page javascript.
     pub rk: bool,
+}
+
+/// TODO
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RegisteredPrf {
+    /// TODO
+    pub eval: PrfEval,
+}
+
+/// TODO
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Prf {
+    /// TODO
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval: Option<PrfEval>,
+    /// TODO
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "evalByCredential"
+    )]
+    pub eval_by_credential: Option<HashMap<HumanBinaryData, PrfEval>>,
+}
+
+impl From<RegisteredPrf> for Prf {
+    fn from(registered: RegisteredPrf) -> Self {
+        Self {
+            eval: Some(registered.eval),
+            eval_by_credential: None,
+        }
+    }
+}
+
+impl ExtnState<RegisteredPrf> {
+    /// TODO
+    pub fn into_client_eval(self) -> Option<Prf> {
+        match self {
+            ExtnState::Set(reg) | ExtnState::Unsolicited(reg) => Some(reg.into()),
+            ExtnState::Ignored => None,
+            ExtnState::NotRequested => None,
+            ExtnState::Unsigned(_) => None,
+        }
+    }
+}
+
+/// TODO
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PrfEval {
+    /// TODO
+    pub first: HumanBinaryData,
+    /// TODO
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub second: Option<HumanBinaryData>,
 }
 
 /// <https://w3c.github.io/webauthn/#dictdef-authenticationextensionsclientoutputs>
@@ -399,6 +496,9 @@ pub struct RegisteredExtensions {
     /// The state of the client credential properties extension
     #[serde(default)]
     pub cred_props: ExtnState<CredProps>,
+    /// The state of the PRF extension
+    #[serde(default)]
+    pub prf: ExtnState<RegisteredPrf>,
 }
 
 impl RegisteredExtensions {
@@ -409,10 +509,15 @@ impl RegisteredExtensions {
             hmac_create_secret: ExtnState::NotRequested,
             appid: ExtnState::NotRequested,
             cred_props: ExtnState::NotRequested,
+            prf: ExtnState::NotRequested,
         }
     }
 }
 
 /// The set of extensions that were provided by the client during authentication
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AuthenticationExtensions {}
+pub struct AuthenticationExtensions {
+    /// TODO
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prf: Option<Prf>,
+}

@@ -1,6 +1,7 @@
 //! Internal structures for parsing webauthn registrations and challenges. This *may* change
 //! at anytime and should not be relied on in your library.
 
+use crate::constants::PRF_EVAL_SIZE_BYTES;
 use crate::error::WebauthnError;
 use crate::proto::*;
 use serde::Deserialize;
@@ -174,11 +175,22 @@ impl Credential {
             (None, false) => ExtnState::NotRequested,
         };
 
+        let prf = match req_extn.prf.is_some() {
+            true => ExtnState::Set(RegisteredPrf {
+                eval: PrfEval {
+                    first: HumanBinaryData::from(rand::random::<[u8; PRF_EVAL_SIZE_BYTES]>()),
+                    second: None,
+                },
+            }),
+            false => ExtnState::Ignored,
+        };
+
         let extensions = RegisteredExtensions {
             cred_protect,
             hmac_create_secret,
             appid,
             cred_props,
+            prf,
         };
 
         trace!(?extensions);
@@ -212,10 +224,10 @@ impl Credential {
 }
 
 pub(crate) fn process_authentication_extensions(
-    auth_extn: &AuthenticationSignedExtensions,
+    auth_extn: AuthenticationSignedExtensions,
 ) -> AuthenticationExtensions {
     trace!(?auth_extn);
-    AuthenticationExtensions {}
+    AuthenticationExtensions { prf: auth_extn.prf }
 }
 
 /*
@@ -400,6 +412,14 @@ impl<T: Ceremony> TryFrom<&[u8]> for AuthenticatorData<T> {
                 WebauthnError::ParseNOMFailure
             })
             .map(|(_, ad)| ad)
+    }
+}
+
+impl<T: Ceremony> AuthenticatorData<T> {
+    /// TODO
+    #[inline]
+    pub fn add_prf_extension(&mut self, prf: Prf) {
+        self.extensions.add_prf(prf);
     }
 }
 
